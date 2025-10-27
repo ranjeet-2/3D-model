@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Model Viewer & Measurement</title>
+    <style>
+        /* Basic styling */
+        body { margin: 0; overflow: hidden; /* Prevent scrollbars */ }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: sans-serif;
+            z-index: 100; /* Ensure info box is on top */
+        }
+        #container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <p>Click two points on the model.</p>
+        <p>Point 1 (XYZ): <span id="point1_coords">N/A</span></p>
+        <p>Point 2 (XYZ): <span id="point2_coords">N/A</span></p>
+        <p>Distance: <span id="distance">N/A</span></p>
+        <button id="resetButton">Reset Points</button>
+    </div>
+
+    <div id="container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module" src="script.js"></script>
+</body>
+</html>
