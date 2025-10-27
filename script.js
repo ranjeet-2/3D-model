@@ -5,20 +5,20 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- Global Variables ---
 let scene, camera, renderer, controls;
-let model;
+let model; // Holds the single loaded model
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const selectedPoints = [];
 const sphereMarkers = [];
 
 // --- DOM Elements ---
-const point1CoordsSpan = document.getElementById('point_coords');
+const point1CoordsSpan = document.getElementById('point1_coords'); // <<< CORRECTED ID
 const point2CoordsSpan = document.getElementById('point2_coords');
 const distanceSpan = document.getElementById('distance');
 const resetButton = document.getElementById('resetButton');
 const container = document.getElementById('container');
 
-// --- NEW: Get Model Name from URL Parameter ---
+// --- Get Model Name from URL Parameter ---
 const urlParams = new URLSearchParams(window.location.search);
 const modelName = urlParams.get('model'); // Get value after ?model=
 const defaultModel = 'hut recaled 2.glb'; // Fallback if no parameter
@@ -46,7 +46,8 @@ function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(1, 1, 2);
+    // Adjust initial camera position if models appear too small/large
+    camera.position.set(0.5, 0.5, 1.0); // May need tweaking based on typical model size
 
     // Renderer setup
     renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -57,34 +58,52 @@ function init() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
+    // Auto-rotate can be nice for viewing, uncomment if desired
+    // controls.autoRotate = true; 
+    // controls.autoRotateSpeed = 0.5;
 
     // Axis Helper
-    const axesHelper = new THREE.AxesHelper(1);
+    const axesHelper = new THREE.AxesHelper(0.5); // Adjust size as needed
     scene.add(axesHelper);
 
     // Load the GLB Model (using the dynamic modelToLoad variable)
     const loader = new GLTFLoader();
     loader.load(
-        modelToLoad, // <<< CHANGED: Use the variable here
+        modelToLoad, // Use the variable here
         function (gltf) { // Success
             model = gltf.scene;
 
-            // Centering (Keep)
+            // Centering (Keep) - Crucial for OrbitControls to work well
             const box = new THREE.Box3().setFromObject(model);
             const center = box.getCenter(new THREE.Vector3());
             model.position.sub(center);
 
             // --- NO AUTOMATIC SCALING ---
-            // We assume models are already correctly scaled
+            // We assume models ('hut recaled 2.glb', 'kappa rescaled.glb')
+            // are already correctly scaled in meters from Polycam/export.
 
             scene.add(model);
             console.log(`Model ${modelToLoad} loaded successfully. Using original scale.`);
+            
+            // Optional: Adjust camera target after loading and centering
+            controls.target.copy(model.position); 
+            controls.update();
+
         },
         undefined, // Progress
         function (error) { // Error
             console.error(`An error happened loading ${modelToLoad}:`, error);
-            // Optionally display an error message to the user on the page
-            alert(`Failed to load model: ${modelToLoad}. Please check the filename and URL.`);
+            // Display error to the user
+            const errorDiv = document.createElement('div');
+            errorDiv.textContent = `Failed to load model: ${modelToLoad}. Check filename and ensure it's in the correct folder.`;
+            errorDiv.style.position = 'absolute';
+            errorDiv.style.top = '50%';
+            errorDiv.style.left = '50%';
+            errorDiv.style.transform = 'translate(-50%, -50%)';
+            errorDiv.style.padding = '20px';
+            errorDiv.style.backgroundColor = 'red';
+            errorDiv.style.color = 'white';
+            document.body.appendChild(errorDiv);
         }
     );
 
@@ -95,7 +114,7 @@ function init() {
 }
 
 // --- Event Handler Functions ---
-// (onWindowResize, onCanvasClick, updateInfoDisplay, resetSelection remain the same as before)
+
 // Adjust camera and renderer on window resize
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -109,27 +128,38 @@ function onCanvasClick(event) {
         alert("Two points already selected. Please reset to measure again.");
         return;
     }
-    if (!model) return; // Don't raycast if model hasn't loaded
+    if (!model) { // Don't raycast if model hasn't loaded or failed
+        console.warn("Model not loaded yet, cannot measure.");
+        return; 
+    }
 
+    // Calculate mouse position in normalized device coordinates (-1 to +1)
     mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    // Update the raycaster with the camera and mouse position
     raycaster.setFromCamera(mouse, camera);
-    const intersects = raycaster.intersectObject(model, true);
+
+    // Check for intersections
+    const intersects = raycaster.intersectObject(model, true); // `true` checks children recursively
 
     if (intersects.length > 0) {
         const intersectionPoint = intersects[0].point;
         selectedPoints.push(intersectionPoint.clone());
 
-        // Adjust marker size relative to the scene, not model scale which might be 1
-        const markerSize = 0.015 * camera.position.distanceTo(intersectionPoint) / 5; // Adjust factor 5 as needed
-        const markerGeometry = new THREE.SphereGeometry(Math.max(0.005, markerSize)); // Ensure minimum size
+        // Adjust marker size relative to camera distance for better visibility
+        const distanceToPoint = camera.position.distanceTo(intersectionPoint);
+        // Experiment with these values (0.01 base size, 5.0 reference distance)
+        const markerSize = Math.max(0.005, 0.01 * distanceToPoint / 2.0); 
 
-        const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const markerGeometry = new THREE.SphereGeometry(markerSize); 
+        const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red
         const markerMesh = new THREE.Mesh(markerGeometry, markerMaterial);
         markerMesh.position.copy(intersectionPoint);
         scene.add(markerMesh);
         sphereMarkers.push(markerMesh);
-        updateInfoDisplay();
+
+        updateInfoDisplay(); // Update the text info box
     }
 }
 
@@ -140,7 +170,8 @@ function updateInfoDisplay() {
     point2CoordsSpan.textContent = selectedPoints.length === 2 ? formatCoord(selectedPoints[1]) : 'N/A';
     if (selectedPoints.length === 2) {
         const distance = selectedPoints[0].distanceTo(selectedPoints[1]);
-        distanceSpan.textContent = `${distance.toFixed(3)} units`;
+        // Display units as meters, assuming your input models are scaled correctly
+        distanceSpan.textContent = `${distance.toFixed(3)} meters`; 
     } else {
         distanceSpan.textContent = 'N/A';
     }
@@ -148,17 +179,17 @@ function updateInfoDisplay() {
 
 // Reset the point selection and markers
 function resetSelection() {
-    selectedPoints.length = 0;
-    sphereMarkers.forEach(marker => scene.remove(marker));
-    sphereMarkers.length = 0;
-    updateInfoDisplay();
+    selectedPoints.length = 0; // Clear selected coordinates
+    sphereMarkers.forEach(marker => scene.remove(marker)); // Remove spheres from scene
+    sphereMarkers.length = 0; // Clear marker array
+    updateInfoDisplay(); // Update text display
     console.log("Point selection reset.");
 }
 
 
 // --- Animation Loop ---
 function animate() {
-    requestAnimationFrame(animate);
-    controls.update();
-    renderer.render(scene, camera);
+    requestAnimationFrame(animate); // Loop the animation
+    controls.update(); // Update controls for damping and auto-rotate
+    renderer.render(scene, camera); // Render the scene
 }
