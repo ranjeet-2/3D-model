@@ -5,28 +5,34 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- Global Variables ---
 let scene, camera, renderer, controls;
-let model; // Holds the single loaded model
+let model;
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
-const selectedPoints = [];
-const sphereMarkers = [];
+const selectedPoints = []; // Stores RAW clicked points (absolute coordinates)
+const sphereMarkers = []; // Red measurement markers
+let isSettingOrigin = false; // Flag for "click next to set origin" mode
+let originPoint = new THREE.Vector3(0, 0, 0); // Stores the chosen origin offset
+let originMarker = null; // Blue origin marker
+let originHasBeenSet = false; // <<< NEW: Tracks if user has ever set/reset the origin
 
 // --- DOM Elements ---
-const point1CoordsSpan = document.getElementById('point1_coords'); // <<< CORRECTED ID
+const point1CoordsSpan = document.getElementById('point1_coords');
 const point2CoordsSpan = document.getElementById('point2_coords');
 const distanceSpan = document.getElementById('distance');
-const resetButton = document.getElementById('resetButton');
+const resetButton = document.getElementById('resetButton'); // Resets measurement points
+const setOriginButton = document.getElementById('setOriginButton');
+const resetOriginButton = document.getElementById('resetOriginButton');
+const originCoordsSpan = document.getElementById('origin_coords');
+const instructionText = document.createElement('p'); // For user guidance
+const infoDiv = document.getElementById('info'); // Get the info div
 const container = document.getElementById('container');
 
 // --- Get Model Name from URL Parameter ---
 const urlParams = new URLSearchParams(window.location.search);
-const modelName = urlParams.get('model'); // Get value after ?model=
-const defaultModel = 'hut recaled 2.glb'; // Fallback if no parameter
-
-// Use the modelName from URL, or the default if not provided
+const modelName = urlParams.get('model');
+const defaultModel = 'hut recaled 2.glb'; // Default fallback
 const modelToLoad = modelName ? modelName : defaultModel;
 console.log(`Attempting to load model: ${modelToLoad}`);
-
 
 // --- Initialization ---
 init();
@@ -46,8 +52,7 @@ function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    // Adjust initial camera position if models appear too small/large
-    camera.position.set(0.5, 0.5, 1.0); // May need tweaking based on typical model size
+    camera.position.set(0.5, 0.5, 1.0);
 
     // Renderer setup
     renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -58,138 +63,206 @@ function init() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    // Auto-rotate can be nice for viewing, uncomment if desired
-    // controls.autoRotate = true; 
-    // controls.autoRotateSpeed = 0.5;
 
     // Axis Helper
-    const axesHelper = new THREE.AxesHelper(0.5); // Adjust size as needed
+    const axesHelper = new THREE.AxesHelper(0.5);
     scene.add(axesHelper);
 
-    // Load the GLB Model (using the dynamic modelToLoad variable)
+    // Add instruction text to info box (Initially prompt to set origin)
+    instructionText.textContent = "Please set an origin point first using the buttons.";
+    instructionText.style.color = "orange";
+    // Insert instruction text before the first <p> tag within the #info div
+    if (infoDiv && infoDiv.firstChild) {
+        infoDiv.insertBefore(instructionText, infoDiv.firstChild);
+    } else if (infoDiv) {
+        infoDiv.appendChild(instructionText);
+    }
+
+
+    // Load the GLB Model
     const loader = new GLTFLoader();
     loader.load(
-        modelToLoad, // Use the variable here
+        modelToLoad,
         function (gltf) { // Success
             model = gltf.scene;
-
-            // Centering (Keep) - Crucial for OrbitControls to work well
             const box = new THREE.Box3().setFromObject(model);
             const center = box.getCenter(new THREE.Vector3());
-            model.position.sub(center);
-
-            // --- NO AUTOMATIC SCALING ---
-            // We assume models ('hut recaled 2.glb', 'kappa rescaled.glb')
-            // are already correctly scaled in meters from Polycam/export.
+            model.position.sub(center); // Center model visually
 
             scene.add(model);
             console.log(`Model ${modelToLoad} loaded successfully. Using original scale.`);
-            
-            // Optional: Adjust camera target after loading and centering
-            controls.target.copy(model.position); 
+            controls.target.copy(model.position);
             controls.update();
-
+            updateInfoDisplay(); // Show initial origin (0,0,0)
         },
         undefined, // Progress
         function (error) { // Error
             console.error(`An error happened loading ${modelToLoad}:`, error);
-            // Display error to the user
-            const errorDiv = document.createElement('div');
-            errorDiv.textContent = `Failed to load model: ${modelToLoad}. Check filename and ensure it's in the correct folder.`;
-            errorDiv.style.position = 'absolute';
-            errorDiv.style.top = '50%';
-            errorDiv.style.left = '50%';
-            errorDiv.style.transform = 'translate(-50%, -50%)';
-            errorDiv.style.padding = '20px';
-            errorDiv.style.backgroundColor = 'red';
-            errorDiv.style.color = 'white';
-            document.body.appendChild(errorDiv);
+            alert(`Failed to load model: ${modelToLoad}.`);
         }
     );
 
     // Event Listeners
     window.addEventListener('resize', onWindowResize);
     renderer.domElement.addEventListener('click', onCanvasClick);
-    resetButton.addEventListener('click', resetSelection);
+    resetButton.addEventListener('click', resetMeasurementSelection);
+    setOriginButton.addEventListener('click', activateSetOriginMode); // Changed function name
+    resetOriginButton.addEventListener('click', resetOriginToWorld);
+
+    // Initially disable measurement reset button
+    resetButton.disabled = true;
 }
 
 // --- Event Handler Functions ---
 
-// Adjust camera and renderer on window resize
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-// Handle clicks on the 3D model
-function onCanvasClick(event) {
-    if (selectedPoints.length >= 2) {
-        alert("Two points already selected. Please reset to measure again.");
-        return;
-    }
-    if (!model) { // Don't raycast if model hasn't loaded or failed
-        console.warn("Model not loaded yet, cannot measure.");
-        return; 
-    }
+// Renamed function for clarity
+function activateSetOriginMode() {
+    if (!model) return;
+    isSettingOrigin = true;
+    // Don't change originHasBeenSet here
+    resetButton.disabled = true; // Disable measurement reset
+    instructionText.textContent = "Click on the model to set the NEW origin.";
+    instructionText.style.color = "orange";
+    setOriginButton.textContent = 'Setting Origin...';
+    setOriginButton.style.backgroundColor = 'orange';
+    resetMeasurementSelection(); // Clear previous measurement points
+    console.log("Set Origin Mode Activated.");
+}
 
-    // Calculate mouse position in normalized device coordinates (-1 to +1)
+function resetOriginToWorld() {
+    originPoint.set(0, 0, 0); // Reset origin vector
+    if (originMarker) {
+        scene.remove(originMarker);
+        originMarker = null;
+    }
+    originHasBeenSet = true; // Mark origin as explicitly set (to 0,0,0)
+    resetButton.disabled = false; // Enable measurement reset
+    instructionText.textContent = "Origin reset to World (0,0,0). Click to measure.";
+    instructionText.style.color = "lightgreen";
+    isSettingOrigin = false; // Ensure we exit origin mode if active
+    setOriginButton.textContent = 'Set Origin Point';
+    setOriginButton.style.backgroundColor = '';
+    updateInfoDisplay();
+    console.log("Origin reset to world (0,0,0). Measurement enabled.");
+}
+
+function onCanvasClick(event) {
+    if (!model) return;
+
     mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
     mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-    // Update the raycaster with the camera and mouse position
     raycaster.setFromCamera(mouse, camera);
-
-    // Check for intersections
-    const intersects = raycaster.intersectObject(model, true); // `true` checks children recursively
+    const intersects = raycaster.intersectObject(model, true);
 
     if (intersects.length > 0) {
-        const intersectionPoint = intersects[0].point;
-        selectedPoints.push(intersectionPoint.clone());
+        const intersectionPoint = intersects[0].point; // Raw coordinate
 
-        // Adjust marker size relative to camera distance for better visibility
-        const distanceToPoint = camera.position.distanceTo(intersectionPoint);
-        // Experiment with these values (0.01 base size, 5.0 reference distance)
-        const markerSize = Math.max(0.005, 0.01 * distanceToPoint / 2.0); 
+        if (isSettingOrigin) {
+            // --- SETTING THE ORIGIN ---
+            originPoint.copy(intersectionPoint);
+            console.log(`New Origin Set To Raw: (${originPoint.x.toFixed(3)}, ${originPoint.y.toFixed(3)}, ${originPoint.z.toFixed(3)})`);
 
-        const markerGeometry = new THREE.SphereGeometry(markerSize); 
-        const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red
-        const markerMesh = new THREE.Mesh(markerGeometry, markerMaterial);
-        markerMesh.position.copy(intersectionPoint);
-        scene.add(markerMesh);
-        sphereMarkers.push(markerMesh);
+            if (originMarker) scene.remove(originMarker); // Remove old one
 
-        updateInfoDisplay(); // Update the text info box
+            // Add new blue marker
+            const markerSize = 0.018; // Fixed size for origin marker might be better
+            const originMarkerGeo = new THREE.SphereGeometry(markerSize);
+            const originMarkerMat = new THREE.MeshBasicMaterial({ color: 0x0000ff }); // Blue
+            originMarker = new THREE.Mesh(originMarkerGeo, originMarkerMat);
+            originMarker.position.copy(originPoint);
+            scene.add(originMarker);
+
+            isSettingOrigin = false; // Exit origin setting mode
+            originHasBeenSet = true; // Mark origin as explicitly set
+            resetButton.disabled = false; // Enable measurement reset
+            instructionText.textContent = "Origin set. Click two points to measure.";
+            instructionText.style.color = "lightgreen";
+            setOriginButton.textContent = 'Set Origin Point';
+            setOriginButton.style.backgroundColor = '';
+            updateInfoDisplay();
+
+        } else if (originHasBeenSet) { // <<< CHECK if origin has been set before allowing measurement
+            // --- SELECTING MEASUREMENT POINTS ---
+            if (selectedPoints.length >= 2) {
+                alert("Two points already selected. Reset measurement points first.");
+                return;
+            }
+            selectedPoints.push(intersectionPoint.clone()); // Store the raw coordinate
+
+            // Add red visual marker
+            const distanceToPoint = camera.position.distanceTo(intersectionPoint);
+            const markerSize = Math.max(0.005, 0.01 * distanceToPoint / 2.0); // Dynamic size
+            const markerGeometry = new THREE.SphereGeometry(markerSize);
+            const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red
+            const markerMesh = new THREE.Mesh(markerGeometry, markerMaterial);
+            markerMesh.position.copy(intersectionPoint); // Place at raw position
+            scene.add(markerMesh);
+            sphereMarkers.push(markerMesh);
+
+            updateInfoDisplay(); // Update display relative to CURRENT origin
+
+        } else {
+             // Inform user if they click before origin is ever set
+             alert("Please set an origin first using 'Set Origin Point' or 'Reset Origin'.");
+        }
     }
 }
 
-// Update the coordinate and distance information in the HTML
+// Update the coordinate and distance information (RELATIVE TO CURRENT ORIGIN)
 function updateInfoDisplay() {
-    const formatCoord = (p) => `(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)})`;
-    point1CoordsSpan.textContent = selectedPoints.length >= 1 ? formatCoord(selectedPoints[0]) : 'N/A';
-    point2CoordsSpan.textContent = selectedPoints.length === 2 ? formatCoord(selectedPoints[1]) : 'N/A';
+    const formatCoordRelativeToOrigin = (p_raw) => {
+        const relativeP = p_raw.clone().sub(originPoint);
+        return `(${relativeP.x.toFixed(3)}, ${relativeP.y.toFixed(3)}, ${relativeP.z.toFixed(3)})`;
+    };
+
+    // Display Current Origin Coordinates (Raw)
+    originCoordsSpan.textContent = `(${originPoint.x.toFixed(3)}, ${originPoint.y.toFixed(3)}, ${originPoint.z.toFixed(3)})`;
+
+    // Display Measurement Points (Relative to Current Origin) if origin is set
+    if (originHasBeenSet) {
+        point1CoordsSpan.textContent = selectedPoints.length >= 1 ? formatCoordRelativeToOrigin(selectedPoints[0]) : 'N/A';
+        point2CoordsSpan.textContent = selectedPoints.length === 2 ? formatCoordRelativeToOrigin(selectedPoints[1]) : 'N/A';
+    } else {
+        point1CoordsSpan.textContent = 'Set Origin First';
+        point2CoordsSpan.textContent = 'Set Origin First';
+    }
+
+
+    // Distance calculation uses raw points
     if (selectedPoints.length === 2) {
         const distance = selectedPoints[0].distanceTo(selectedPoints[1]);
-        // Display units as meters, assuming your input models are scaled correctly
-        distanceSpan.textContent = `${distance.toFixed(3)} meters`; 
+        distanceSpan.textContent = `${distance.toFixed(3)} meters`;
     } else {
         distanceSpan.textContent = 'N/A';
     }
 }
 
-// Reset the point selection and markers
-function resetSelection() {
-    selectedPoints.length = 0; // Clear selected coordinates
-    sphereMarkers.forEach(marker => scene.remove(marker)); // Remove spheres from scene
-    sphereMarkers.length = 0; // Clear marker array
-    updateInfoDisplay(); // Update text display
-    console.log("Point selection reset.");
+// Resets only the MEASUREMENT points (red markers)
+function resetMeasurementSelection() {
+    selectedPoints.length = 0;
+    sphereMarkers.forEach(marker => scene.remove(marker));
+    sphereMarkers.length = 0;
+    updateInfoDisplay();
+    console.log("Measurement point selection reset.");
+    // Resetting measurement doesn't affect origin mode
+    if (isSettingOrigin) {
+        instructionText.textContent = "Click on the model to set the NEW origin.";
+        instructionText.style.color = "orange";
+    } else if (originHasBeenSet) {
+         instructionText.textContent = "Origin set. Click two points to measure.";
+         instructionText.style.color = "lightgreen";
+    }
 }
-
 
 // --- Animation Loop ---
 function animate() {
-    requestAnimationFrame(animate); // Loop the animation
-    controls.update(); // Update controls for damping and auto-rotate
-    renderer.render(scene, camera); // Render the scene
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
 }
